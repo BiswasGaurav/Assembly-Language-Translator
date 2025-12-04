@@ -1,4 +1,3 @@
-// SUPREET MAURYA
 #include <bits/stdc++.h>
 using namespace std;
 #define S second
