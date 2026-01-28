@@ -1,712 +1,677 @@
+
 #include <bits/stdc++.h>
+#include <fstream>
+#include <iomanip>
+#define NIL -2
 using namespace std;
-#define S second
-#define F first
-#define pb push_back
-#define sort_all(V) sort(V.begin(),V.end())
 
-struct syml {
-    int address;
-    int type_of_symbol;
+// for removing leading and trailing spaces
+//remove extra spaces in between and empty lines
+const string ALL_SPACES = " \n\r\t\f\v";
+//removes extra spaces at right
+string trim_right(const string& s);
+//removes paces at left
+string trim_left(const string& s);
+string trim(const string& s);
+
+// base verification functions;
+int checkOctal(string s);
+int checkDecimal(string s);
+int checkHexadecimal(string s);
+
+//functions used in pass 1
+// check whether parameter is number or symbol
+int parameter_type(string s);                                   
+ // check whether label is valid or not
+int valid_label(string label);    
+  // find machine code equivalent of symbol
+int sym_to_param(int opcode, string param_name, int pc); 
+ // does the mnemonic support this parameter
+int check_mnem(int opcode, string param_name);         
+  // check for unused symbol
+int checkUnusedSymbol(string sym);                     
+  // find the line number of a symbol
+int symbolLine(string sym);                       
+ // exclude extension from given input file
+string getFileName(string fname);                
+                   
+
+
+// base conversion functions
+int string_to_int(string s, int base=10);
+int conv_to_num(string s);
+string dec_to_hex(int num);
+
+// mnemonic related functions
+int getOpcode(string mnem);
+string getMnem(int opcode);
+int isParam(int opcode);
+uint32_t Mac_code(int opcode, int param_value=0);
+
+// data structure to store an instruction info
+typedef struct mnemonic {
+    string mnem;
+    int opcode,isParam,number,set,data,label;
+
+    mnemonic(string mnem,int opcode,int isParam,int number,int set,int data,int label) {
+        this->mnem = mnem;          // name of the mnemonic(fixed names)
+        this->opcode = opcode;      // opcode of mnemonic
+        this->isParam = isParam;    // to check if operand is taken 
+        this->number = number;      // to check if number is taken as operand
+        this->set = set;            // to check if SET can be an operand
+        this->data = data;          // to check if data can be operand
+        this->label = label;        // to check if label can be operand
+    }
+} mnemonic;
+
+//  instruction set mapped according to above data structure
+vector<mnemonic> mnem_mapping = {
+    mnemonic("ldc",0,1,      1,1,1,1),
+    mnemonic("adc",1,1,      1,1,1,1),
+    mnemonic("ldl",2,1,      1,1,0,0),
+    mnemonic("stl",3,1,      1,1,0,0),
+    mnemonic("ldnl",4,1,     1,1,0,0),
+    mnemonic("stnl",5,1,     1,1,0,0),
+    mnemonic("add",6,0,      0,0,0,0),
+    mnemonic("sub",7,0,      0,0,0,0),
+    mnemonic("shl",8,0,      0,0,0,0),
+    mnemonic("shr",9,0,      0,0,0,0),
+    mnemonic("adj",10,1,     1,1,0,0),
+    mnemonic("a2sp",11,0,    0,0,0,0),
+    mnemonic("sp2a",12,0,    0,0,0,0),
+    mnemonic("call",13,1,    1,1,0,1),
+    mnemonic("return",14,0,  0,0,0,0),
+    mnemonic("brz",15,1,     1,1,0,1),
+    mnemonic("brlz",16,1,    1,1,0,1),
+    mnemonic("br", 17,1,     1,1,0,1),
+    mnemonic("HALT",18,0,    0,0,0,0),
+    mnemonic("SET",19,1,     1,0,0,0),
+    mnemonic("data",20,1,    1,0,0,0)
 };
-struct mn {
-    string opcode ;
-    int mnemonic_type ;
-};
 
-bool newFlag = 0;
-map<string , int> mp;
+// data structure to store an instruction in an intermediate form
+typedef struct inter {
+    //to store each line from input file
+    string line; 
+    // program counter value
+    uint32_t pcval; 
+    //to store label, when specified
+    string label;   
+    //store opcode of mnemonic
+    int opcode;    
+    //to store type of parameter
+    string param_t; 
+    //to store name of parameter
+    string param_name;
+    int param_value;
 
-struct lb_ins_op {
-    string instrc , label , oprd;
-    lb_ins_op(string &l, string &ins, string &oprd1) {
-        label = l; instrc = ins; oprd = oprd1;
+    inter(string line, uint32_t pcval, string label, int opcode, string param_t, string param_name, int param_value) {
+        this->line = line;
+        this->pcval = pcval;
+        this->label = label;
+        this->opcode = opcode;
+        this->param_t = param_t;
+        this->param_name = param_name;
+        this->param_value = param_value;
     }
-};
-map<string, syml> labels_declared; 
-map<string, syml> labels_used;
-map<string, mn> opcode_table;
-set<string> data_set; 
-vector<string> machine_code;
-vector<string> list_code;
-vector<pair<int, string>> warn;
-vector<pair<int, lb_ins_op>> data_seg;
-string file_list;
-vector<pair<int , string >> v_error;
-set<string> data_declared;
-vector<pair<int, lb_ins_op>> instrc_cleaned; 
-string file_log;
-vector<pair<int, lb_ins_op>> instrc_ip; 
-string mach_cd_file_name;
-string inp_name;
+} inter;
 
-int p_counter = 0;
-bool fl_halt = 0 ;
-bool q = 0;
-bool is_num( char chr ) {
-    return (chr <= '9' && chr >= '0') ;
-}
+// contents of symbol table -> information of each symbol (its name, address or program counter, type) is stored
+// type - a symbol can be of type label/data/SET
+map < string, pair<uint32_t,int> > symbols_list;
+// all instructions are stored as intermediates here
+vector < inter > intermediate;
 
-void get_lb(string &lbl_name, string &instrc, string &oprd1, int &line_num, string ip_format , int &j1 ) {
-    int i2 = j1;
-    while ( (ip_format[j1] == '\t') || (ip_format[j1] == ' ' ) ) {
-        if ( j1 == ip_format.size() ) break;
-        j1++;
-    }
-    while (!(ip_format[j1] == ' ' || ip_format[j1] == '\t')) {
-        if (j1 == ip_format.size()) break;
-        instrc += ip_format[j1];
-        j1++;
-    }
-    q = 0;
-    while ((ip_format[j1] == ' ' || ip_format[j1] == '\t')) {
-        if (j1 == ip_format.size()) break;
-        j1++;
-    }
-    i2 = j1;
-    while (!(ip_format[j1] == ' ' || ip_format[j1] == '\t')) {
-        if (j1 == ip_format.size()) break;
-        oprd1 += ip_format[j1];
-        j1++;
-    }
-    while ((ip_format[j1] == ' ' || ip_format[j1] == '\t')) {
-        if (j1 == ip_format.size()) break;
-        j1++;
-    }
-}
-void get_lb_ins_op ( string &instrc, string &lbl_name , string &oprd1, int &line_num, string ip_format) {
-    int j1 = 0;
-    while( j1 < ip_format.size() ) {
-        if (ip_format[j1] == ':') {
-            int i1 = 0 ;
-            while( i1 < j1 ) {
-                lbl_name = lbl_name + ip_format[i1];
-                i1++;
-            }
-            j1++;
-            break;
-        }
-        j1++;
-    }
-    if ( ip_format[j1 - 1] != ':' ) j1 = 0;
-
-    get_lb( lbl_name , instrc , oprd1 , line_num , ip_format , j1 ) ;
-
-    if  ( j1 != ip_format.size() ) {
-        string err = "Extra oprd Present";
-        v_error.pb({line_num, err });
-    }
-}
-
-bool is_character(char chr ) {
-    return ((chr >= 'A' && chr <= 'Z') || (chr >= 'a' && chr <= 'z')) ;
-}
-void chtd(string &str , int &ans , int &j1 , int &mult ) {     //converts hexa to decimal
-    while(j1 >= 2 ) {
-        if ( str[j1] <= 'F' && str[j1] >= 'A')    {
-            int x = (int(str[j1]) - 55);
-            ans = ans + (x * mult);
-            mult *=  16;
-        }
-        else if ( str[j1] <= '9' && str[j1] >= '0' )    {
-            int x = (int(str[j1]) - 48) ;
-            ans = ans + (x * mult);
-            mult *=  16;   
-        }
-        j1--;
-    }
-}
-bool is_hexa(string str)    {
-    return ( str.size() > 2 && str.compare(0, 2, "0x") == 0 && str.find_first_not_of("0123456789abcdefABCDEF", 2) == std::string::npos );
-}
-int convert_hex_to_dec(string str) {
-    int mult = 1;
-    int y = str.size();
-    int ans = 0;
-    int j1 = y - 1;
-    chtd(str , ans , j1 , mult ) ;
-    return ans;
-}
-bool is_oct(string str) {
-    return (str.size() > 1 && str.compare(0, 1, "0") == 0 && str.find_first_not_of("01234567", 1) == std::string::npos);
-}
-void cotd(string &str , int &mult , int &j1 , int &ans ) {   //converts octal to decimal
-    while(j1 >= 1 ) {
-        if (str[j1] >= '0' && str[j1] <= '7') {
-            ans = ans + (int(str[j1]) - 48) * mult;
-            mult = mult * 8;
-        }
-        j1--;
-    }
-}
-int convert_oct_to_dec(string str) {
-    int y = str.size();
-    int mult = 1;
-    int ans = 0;
-    int j1 = y - 1;
-    cotd( str , mult , j1 , ans ) ;
-    return ans;
-}
-bool is_label_name(string &lbl_name) {
-    if (lbl_name.empty())  return false;
-    bool flk = (is_character(lbl_name[0]));
-    int i = 1; 
-    while(i < lbl_name.size() ) {
-        bool flk1 = ((is_character(lbl_name[i])) | (is_num(lbl_name[i]))) ;
-        flk1 = ( flk1 | ( lbl_name[i] == '_') );
-        flk = ( flk & flk1 );
-        i++;
-    }
-    return flk;
-}
-string oprd_process(string trs, int *wrs, int line_num) {
-    if (is_label_name(trs)) { 
-        labels_used[trs] = {line_num, 5};
-        return trs;
-    }
-    int pos = 1 ;
-    if ( trs[0] == '-' ) pos = -pos ;
-    bool flk = false;
-    if( trs[0] == '-'  ) flk = true;
-    if( (trs[0] == '+') ) flk = true;
-
-    if (flk) trs = trs.substr( 1 );
-    if (is_oct(trs)) return to_string( pos * convert_oct_to_dec(trs) ) ;
-    if (is_hexa(trs)) return to_string( pos * convert_hex_to_dec(trs) ) ;
-    bool flk1 = 1 ;
-    int j1 = 0 ;
-    while( j1 < (int)trs.size() ) {
-        flk1 = ( flk1 & is_num( trs[ j1 ] ) ) ;
-        j1++;
-    }
-    if ( flk1 ) return (to_string(pos * stoi(trs)));
-    *wrs = 1 ;
-    return trs ;
-}
-string hexadeci_generation(int f_num, bool is_addr) {
-    map< int , char > mp;
-    char hr = 'A';
-    char letter = '0';
-    int i = 0 ;
-    while( i <= 15 ) {
-        if( i >= 10 ) mp[i] = hr++;
-        else mp[i] = letter++;
-        i++;
-    }
-    string final_result = "" ;
-    if ( !f_num ) final_result = "0" ;
-
-    if ( f_num <= 0 ) {
-        unsigned int n = f_num;
-        while ( n ) {
-            final_result = mp[n % 16] + final_result;
-            n /= 16;
-        }
-    }
-    else {
-        while ( f_num ) {
-            final_result = mp[f_num % 16] + final_result;
-            f_num /= 16;
-        }
-    }
-    int tmpr = final_result.size();
-    int j1 = 1 ;
-    while( j1 <= (8 - tmpr) ) {
-        final_result = '0' + final_result ;
-        j1++;
-    }
-    if ( is_addr ) return final_result.substr(2);
-    return final_result;
-}
-void ip_clean(int &i1 , string &str , string &new_processed_string) {
-    while( i1 < str.size() ) {
-        char trte = str[i1] ;
-        if ( trte == ';' ) break ;
-        bool flk = 1 ;
-        bool flr2 = false;
-        if( trte <= 'Z' && trte >= 'A' )flr2 = true ;
-        flk = ( flk & flr2 ) ;
-        if ( flk ) trte = tolower( trte ) ;
-        new_processed_string += trte ;
-        i1++;
-    }
-}
-string input_cleaning(string str) {
-    string new_processed_string;
-    int j1 = 0;
-    int i2 = j1;
-    while ( str[j1] == ' ') {
-        i2 = j1;
-        if ( j1 == str.size() ) break;
-        j1++;
-    }
-    int i1 = j1;
-    i2 = j1 ;
-    ip_clean(i1 , str , new_processed_string ) ;
-    return new_processed_string;
-}
-void set_declare() {
-    vector<pair<int, lb_ins_op>> instrc_tmp;
-    for (auto &rlt : instrc_cleaned) {
-        if ( (rlt.S.instrc == "set" ) ) {
-            mp[rlt.S.label] = stoi(rlt.S.oprd);
-            data_set.insert(rlt.S.label);   //data set ( set<string>  ) 
-
-        }
-    }
-    for (auto &rlt : data_seg) {
-        data_declared.insert(rlt.S.label);
-    }
-    for (auto &rlt : instrc_cleaned) {
-        bool in_data = false;
-        if ( (rlt.S.instrc == "set") ) {
-
-            if (data_declared.count(rlt.S.label) == 0) {
-                newFlag = 1;
-                
-                rlt.S.instrc = "data";
-                data_declared.insert(rlt.S.label);   //data_declare (set<string> )
-                in_data = true;
-                data_seg.pb(rlt);
-            }
-        }
-        if (!in_data) {
-            instrc_tmp.pb(rlt);
-        }
-    }
-    instrc_cleaned.clear();
-    for (auto &rlt : instrc_tmp) {
-        instrc_cleaned.pb( rlt );
-    }
-    for (auto &rlt : data_seg) {
-        instrc_cleaned.pb( rlt );
-    }
-    instrc_tmp.clear();
-    data_seg.clear();
-}
-bool instrc_set(string &lbl_name, string &val, int line_num, int to_add) {
-    if ( lbl_name.empty() ) {
-        string err = "No label name Given in Set Instruction ";
-        v_error.pb( make_pair( line_num , err ) ) ;
-        return false;
-    }
-    if ( val.empty() ) {
-        string err = "No oprd Given in Set Instruction ";
-        v_error.pb( make_pair( line_num, err ) );
-        return false;
-    }
-    int chk = 0;
-    string nop = oprd_process(val, &chk, line_num);
-    bool fl = (is_character(val[0]) | (chk == 1)) ;
-    if (fl) {
-        string err = "Unexpected number Set Instruction ";
-        v_error.pb({line_num, err});
-        return false;
-    }
-    fl = ( data_declared.count(lbl_name) & labels_declared.count(lbl_name) ) ;
-    string ins;
-
-    if ( !fl ) {
-        string label;
-        string op;
-        // increase Stack Size
-        ins = "adj";
-        op = "2";
-        nop = oprd_process(op, &chk, line_num);
-        int tmpo = 0;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        //PUSH A
-        op = "-1";
-        ins = "stl";        
-        nop = oprd_process(op, &chk, line_num);
-        tmpo = 1;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        // PUSH B
-        ins = "stl";
-        op = "0";
-        nop = oprd_process(op, &chk, line_num);
-        tmpo = 2;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-        
-        //load value to set
-        ins = "ldc";
-        op = val;
-        nop = oprd_process(op, &chk, line_num);
-        tmpo = 3;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        //load location Of pointer
-        ins = "ldc";
-        op = lbl_name;
-        tmpo = 2;
-        nop = oprd_process(op, &chk, line_num);
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        //set value in array
-        ins = "adc";
-        tmpo = 1;
-        string str = to_string(to_add);
-        op = str ;
-        nop = oprd_process(op, &chk, line_num);
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        // Store value To Set 
-        ins = "stnl";
-        op = "0";
-        tmpo = 1;
-        nop = oprd_process(op, &chk, line_num);
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        //  Load Back B 
-        ins = "ldl";
-        op = "0";
-        nop = oprd_process(op, &chk, line_num);
-        tmpo = 5;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-
-        //load back A
-        ins = "ldl";
-        op = "0";
-        nop = oprd_process(op, &chk, line_num);
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-         tmpo = 8;
-
-        // Decrease Stack Size
-        ins = "adj";
-        op = "-2";
-        nop = oprd_process(op, &chk, line_num);
-        tmpo = 0 ;
-        instrc_ip.pb(make_pair(p_counter, lb_ins_op(label, ins, nop)));
-        p_counter++;
-    }
-    else return true;
-    return false;   
-}
-void take_input_file(string &inp_name) {
-    ifstream file;
-    file.open(inp_name);
-
-    if (file.fail()) {
-        std :: cout << "Error Occured - Cannot Open Input File" << std :: endl ;
-        exit(0);
-    }
-
-    int line_num = 0;
-    string line_ip;
-    while ( getline(file, line_ip) ) {
-        line_num++;
-        string ip_format = input_cleaning(line_ip);
-        bool flrk1 = ip_format.empty();
-        if (ip_format.empty()) continue;
-
-        string lbl_name ; 
-        string oprd1 ;
-        string instrc1 ;
-        get_lb_ins_op( instrc1 , lbl_name , oprd1 , line_num , ip_format ) ;
-
-        flrk1 = ( !instrc1.empty() &  (instrc1 == "data") ) ;
+int main(int argc, char **argv) {
+    ifstream source;
     
-        if ( !flrk1 ) { 
-            instrc_cleaned.pb( { line_num, lb_ins_op{lbl_name, instrc1, oprd1 } } );
+    string usage = "Usage: ./asm filename.asm";
+    // if there is no input file, give error
+    if(argc < 2) {
+        cout << "No input file specified.\n";
+        cout << "Specify atmost one file\n";
+        cout << usage << "\n";
+        return 0;
+    }else if(argc > 2){
+        cout<< "Only one input file permitted.\n";
+        cout<< usage <<endl;
+        return 0;
+    }
+
+    string filename = argv[1];
+
+    // if file does not exist, give error
+    source.open(argv[1]);
+    if(!source) {
+        cout << "File \"" << argv[1] << "\" doesn\'t exist\n";
+        cout << usage << "\n";
+        return 0;
+    }
+    //store each line from file and pass it
+    string lineo;
+    //program counter
+    uint32_t pc = 0;
+
+    // Pass 1 - Store all instructions in source file as intermediates
+    // Assign Address to each instruction
+    //assign datatypes and reads operations, labels and operands
+    // Read the source file line by line
+    while( source ) {
+        string line,label,mnem,comm,tparam;
+        size_t found;
+        int param=0;
+        if(source.eof())
+         break;     
+        getline(source,lineo);
+        // remove leading and trailing spaces
+        line = trim(lineo);         
+        
+        mnem = line;
+
+        // seperate the comment
+        found = mnem.find(";");
+        if(found != string::npos) {
+            comm = mnem.substr(found);
+            mnem = mnem.substr(0,found);
         }
-        else {
-            bool fl3 = instrc_cleaned.size() > 0;
-            if (fl3) {
-                auto last_instrc = instrc_cleaned.back();
-                if ( (lbl_name.empty() & last_instrc.S.instrc.empty()) ) {
-                    data_seg.pb(last_instrc);
-                    instrc_cleaned.pop_back();
+        mnem = trim(mnem);
+
+        // seperate the label
+        found = mnem.find(":");
+        if(found != string::npos) {
+            label = mnem.substr(0,found);
+            mnem = mnem.substr(found+1);
+        }
+        mnem = trim(mnem);
+
+        // seperate the mnemonic and parameter
+        // if mnem requires the param, seperate the param 
+        found = mnem.find(" ");
+        if(found != string::npos) {
+            tparam = trim(mnem.substr(found));  //parameter name
+            mnem = mnem.substr(0,found);
+        }
+        
+        // store the intermediate form
+        if(mnem != "") {
+            intermediate.push_back( inter(lineo,pc,label,getOpcode(mnem),"",tparam,NIL) );
+            pc++;
+        } else {
+            intermediate.push_back( inter(lineo,pc,label,NIL,"","",NIL) );
+        }
+        
+    }
+    source.close();
+    // End of Pass 1
+    
+    // Pass 2 - Assign addresses to symbols, print errors and conversion to machine code
+    int errorcount = 0;     
+     // print errors to log file
+    ofstream log;          
+    log.open(getFileName(filename)+".log");
+    for(int i = 0; i < intermediate.size(); i++) {
+        if(intermediate[i].line == "") continue;
+        // Validate label here
+        if( intermediate[i].label != "" && !valid_label(intermediate[i].label) ) {
+            log << "ERROR:line " << (i+1) << "\tInvalid Label: \"" << intermediate[i].line << "\"\n";
+            cout << "ERROR:line " << (i+1) << "\tInvalid Label: \"" << intermediate[i].line << "\"\n";
+            errorcount++;
+            continue;
+        } else {
+            // if label is declared first time or was used as parameter , update address and type info in symbol table
+            if(intermediate[i].label != "" && (symbols_list.find(intermediate[i].label) == symbols_list.end() || symbols_list[intermediate[i].label] == make_pair<uint32_t,int>(-1,-1))) {
+                // check whether parameters are valid for the instruction in this line
+                if(intermediate[i].opcode == getOpcode("SET")) {
+                    int type = parameter_type(intermediate[i].param_name);
+                    if(type == 1) {
+                        log << "ERROR:line " << (i+1) << "\tInvalid operand for SET instruction, only number is allowed: \"" << intermediate[i].line << "\"\n";
+                        cout << "ERROR:line " << (i+1) << "\tInvalid operand for SET instruction, only number is allowed: \"" << intermediate[i].line << "\"\n";
+                        errorcount++;
+                        continue;
+                    } else {
+                        int temp = conv_to_num(intermediate[i].param_name);
+                        if(intermediate[i].label != "") {
+                            symbols_list[intermediate[i].label].first = temp;
+                            symbols_list[intermediate[i].label].second = 2;
+                        } else {
+                            // Label is mandatory for SET instruction
+                            log << "ERROR:line " << (i+1) << "\tNo label specified for SET instruction: \"" << intermediate[i].line << "\"\n";
+                            cout << "ERROR:line " << (i+1) << "\tNo label specified for SET instruction: \"" << intermediate[i].line << "\"\n";
+                            errorcount++;
+                            continue;
+                        }
+                    }
+                } else if (intermediate[i].opcode == getOpcode("data")) {
+                    if(intermediate[i].label != "") {
+                        symbols_list[intermediate[i].label].first = intermediate[i].pcval;
+                        symbols_list[intermediate[i].label].second = 1;
+                    } else {
+                        // Label is mandatory for data instruction
+                        log << "ERROR:line " << (i+1) << "\tNo label specified for data instruction: \"" << intermediate[i].line << "\"\n";
+                        cout << "ERROR:line " << (i+1) << "\tNo label specified for data instruction: \"" << intermediate[i].line << "\"\n";
+                        errorcount++;
+                        continue;
+                    }
+                } else {
+                    if(intermediate[i].label != "") {
+                        symbols_list[intermediate[i].label].first = intermediate[i].pcval;
+                        symbols_list[intermediate[i].label].second = 0;
+                    }
+                }
+                // if a symbol was used as parameter before its declaration, update the equivalent value in the instructions it occurs
+                for(int j = 0; j < intermediate.size(); j++) {
+                    if(intermediate[j].param_name == intermediate[i].label && (intermediate[j].param_value == -1 || intermediate[j].param_value == NIL)) {
+                        intermediate[j].param_value = sym_to_param(intermediate[j].opcode,intermediate[j].param_name,intermediate[j].pcval);//symbols_list[intermediate[i].label].first;
+                    }
+                }
+            } else {
+                // show duplicate label error
+                if(intermediate[i].label != "") {
+                    log << "ERROR:line " << (i+1) << "\tDuplicate Label found: \"" << intermediate[i].line << "\"\n";
+                    cout << "ERROR:line " << (i+1) << "\tDuplicate Label found: \"" << intermediate[i].line << "\"\n";
+                    errorcount++;
+                    continue;
                 }
             }
-            data_seg.pb({line_num, lb_ins_op{lbl_name, instrc1, oprd1}});    
         }
-    }
-}
-void first_pass_assembler() {
-    take_input_file(inp_name);
-    // q = 0;
-    set_declare();
 
-    string prev;   //label_name
-    // q = 1;
-    int ctr = 0;
-
-    for (auto &rlt : instrc_cleaned) { 
-        string instrc1 = rlt.S.instrc;
-        int line_num = rlt.F;
-        string lbl_name = rlt.S.label;
-        string oprd = rlt.S.oprd;
-
-        bool flg = 0 ;
-        bool flrt1 = lbl_name.empty();
-        if ( !lbl_name.empty() ) {
-            bool ert = is_label_name(lbl_name);
-            if ( ert ) {
-                ctr = 0;
-                flg = 1;
-                prev = lbl_name;
-            }
-            else {
-                string err = "Incorrect label Name ";
-                v_error.pb( { line_num, err });
-            }
-        }
-        else ctr++;
-
-        bool oprd_need = 0 ;
-        bool flrt = 0 ;
-        int use{} ;
-        int disp = 0 ;
-        if ( !instrc1.empty() ) { 
-            if (!(opcode_table.count(instrc1) > 0)) {
-                string err = "Invalid Mnemonic ";
-                v_error.pb( { line_num, err } );
-            }
-            else {
-                oprd_need = (oprd_need | ( opcode_table[instrc1].mnemonic_type > 0 ) );
-                if ( (instrc1 == "set") ) flrt = instrc_set( prev , oprd , line_num , ctr );
-                if ( flrt ) instrc1 = "data";
-                disp++;
-                if ( flg && instrc1 == "data" ) use = 1;
-            }
-        }
-        if ( !flrt && (instrc1 == "set") ) {
+        // if mnemonic is not in instruction set, show error
+        if(intermediate[i].opcode == -1) {
+            log << "ERROR:line " << (i+1) << "\tInvalid mnemonic: \"" << intermediate[i].line << "\"\n";
+            cout << "ERROR:line " << (i+1) << "\tInvalid mnemonic: \"" << intermediate[i].line << "\"\n";
+            errorcount++;
             continue;
         }
-        if (flg) {
-            if ( !(labels_declared.count(lbl_name) > 0)) {
-                if( newFlag ) {
-                    labels_declared[lbl_name] = { mp[lbl_name] , 0};
+
+        // if no mnemonic is there, go to next line
+        if(intermediate[i].opcode == NIL) {
+            continue;
+        }
+        
+        // if an instruction doesn't need a parameter, but parameter is specified, give error
+        if(isParam(intermediate[i].opcode) == 0) {
+            if(intermediate[i].param_name != "") {
+                log << "ERROR:line " << (i+1) << "\tThis mnemonic doesn\'t require a parameter: \"" << intermediate[i].line << "\"\n";
+                cout << "ERROR:line " << (i+1) << "\tThis mnemonic doesn\'t require a parameter: \"" << intermediate[i].line << "\"\n";
+                errorcount++;
+                continue;
+            }
+        }
+
+        if(isParam(intermediate[i].opcode) == 1) {
+            if(intermediate[i].param_name == "") {
+                // if an instruction needs a parameter, but parameter is not specified, give error
+                log << "ERROR:line " << (i+1) << "\tThis mnemonic requires a parameter: \"" << intermediate[i].line << "\"\n";
+                cout << "ERROR:line " << (i+1) << "\tThis mnemonic requires a parameter: \"" << intermediate[i].line << "\"\n";
+                errorcount++;
+                continue;
+            } else {
+                // check whether parameter is label/number
+                int type = parameter_type(intermediate[i].param_name);
+                if(type == 1) {
+                    // if label is invalid, then error
+                    if(!valid_label(intermediate[i].param_name)) {
+                        log << "ERROR:line " << (i+1) << "\tLabel doesn\'t begin with alphabet: \"" << intermediate[i].line << "\"\n";
+                        cout << "ERROR:line " << (i+1) << "\tLabel doesn\'t begin with alphabet: \"" << intermediate[i].line << "\"\n";
+                        errorcount++;
+                        continue;
+                    }
+                    intermediate[i].param_t = "symbol";
+                    // if label doesn't exist in symbol table, add it
+                    if( symbols_list.find(intermediate[i].param_name) == symbols_list.end() ) {
+                        symbols_list[intermediate[i].param_name] = make_pair<uint32_t,int>(-1,-1);
+                    } else {
+                        // first check whether the mnemonic can get the symbol of this type
+                        // then check whether offset is required or not
+                        if( check_mnem(intermediate[i].opcode,intermediate[i].param_name) ) {
+                            intermediate[i].param_value = sym_to_param(intermediate[i].opcode,intermediate[i].param_name,intermediate[i].pcval);
+                        } else {
+                            // otherwise give error
+                            log << "ERROR:line " << (i+1) << "\tInvalid operand type for the instruction: \"" << intermediate[i].line << "\"\n";
+                            cout << "ERROR:line " << (i+1) << "\tInvalid operand type for the instruction: \"" << intermediate[i].line << "\"\n";
+                            errorcount++;
+                            continue;
+                        }
+                    }
+                } else {
+                    // if instruction doesn't accept number as parameter, show error
+                    if(!mnem_mapping[intermediate[i].opcode].number) {
+                        log << "ERROR:line " << (i+1) << "\tInvalid operand type for the instruction: \"" << intermediate[i].line << "\"\n";
+                        cout << "ERROR:line " << (i+1) << "\tInvalid operand type for the instruction: \"" << intermediate[i].line << "\"\n";
+                        errorcount++;
+                        continue;
+                    }
+                    intermediate[i].param_t = "literal";
+                    int temp = conv_to_num(intermediate[i].param_name);
+                    intermediate[i].param_value = temp;
+                    intermediate[i].param_name = "";
                 }
-                else labels_declared[lbl_name] = {p_counter, use};
-            }
-            else {
-                string err = "Duplicate label Found - \"" + lbl_name + "\"";
-                v_error.pb({line_num, err });
             }
         }
-        string npr;
-        if ( oprd.empty() ) {
-            if ( oprd_need ) {
-                string err = "oprd Missing ";
-                v_error.pb ( { line_num, err } ) ;
+    }
+
+    // show errors for all undefined labels used in the program
+    // for these labels address will be -1
+    for(int i = 0; i < intermediate.size(); i++) {
+        string param_name = intermediate[i].param_name;
+        if(param_name != "") {
+            if(symbols_list[param_name].first == -1) {
+                log << "ERROR:line " << (i+1) << "\tUndefined Label found: \"" << intermediate[i].line << "\"\n";
+                cout << "ERROR:line " << (i+1) << "\tUndefined Label found: \"" << intermediate[i].line << "\"\n";
+                errorcount++;
             }
         }
-        else {
-            if (! oprd_need ) {
-                string err = "Unexpected oprd Found  ";
-                v_error.pb(make_pair(line_num, err ));
-            }
-            else {
-                int tmpr = 0;
-                npr = oprd_process(oprd, &tmpr , line_num);
-                if (tmpr == 1) {
-                    string err = "label Name not Found ";
-                    v_error.pb(make_pair(line_num, err ));
+    }
+
+    // show warnings for all unused labels used in the program
+    // such labels will not be present as parameters in any line of the source file
+    for(auto it = symbols_list.begin(); it != symbols_list.end(); it++) {
+        if(checkUnusedSymbol(it->first)) {
+            int linenum = symbolLine(it->first);
+            log << "WARNING:line " << (linenum+1) << "\tUnused Label found: \"" << intermediate[linenum].line << "\"\n";
+            cout << "WARNING:line " << (linenum+1) << "\tUnused Label found: \"" << intermediate[linenum].line << "\"\n";
+        }
+    }
+    log.close();
+
+    // generate listing file
+    ofstream listing;
+    listing.open(getFileName(filename)+".l");
+    for(auto it = intermediate.begin(); it != intermediate.end(); it++) {
+        // if line in source file is empty, go to next line
+        if(trim(it->line) == "") continue;
+
+        // if opcode is valid, print the program counter and machine code
+        if(it->opcode >= 0) {
+            // print program counter
+            listing << dec_to_hex(it->pcval) << " ";
+            if(isParam(it->opcode)==1) {
+                // if instruction requires parameter, but it is not provided
+                // no machine code is printed
+                if(it->param_value == NIL) {
+                    listing << "         ";
+                } else {
+                    // machine code is printed
+                    string paramV = dec_to_hex(it->param_value);
+                    listing << paramV.substr(2);
+                    listing << dec_to_hex(it->opcode).substr(6) << " ";
+                }
+            } else {
+                // if instruction doesn't require parameter and also parameter is not provided
+                // machine code is printed and operand value is shown as zero
+                if(it->param_value == NIL && it->param_name == "") {
+                    listing << "000000";
+                    listing << dec_to_hex(it->opcode).substr(6) << " ";
+                } else {
+                    // if instruction doesn't require parameter, but it is provided
+                    // no machine code is printed
+                    listing << "         ";
                 }
             }
+        } else {
+            listing << "         ";
         }
-        instrc_ip.pb( make_pair( p_counter , lb_ins_op( lbl_name , instrc1 , npr ) ) ) ;
-        p_counter = p_counter + disp ;
+        // if line in source file is not empty, print the line as it is
+        listing << it->line << "\n";
     }
-    for (auto it : labels_used) {
-        string label_name = it.F;
-        int addr = it.S.address;
-        if ((labels_declared.count(label_name) == 0)) {
-            string error = "No  label as \"" + label_name + "\" has been Declared ";
-            v_error.pb({addr, error});
-        }
-    }
-    for (auto it : labels_declared) {
-        string label_name = it.F;
-        if ( (labels_used.count(label_name) == 0) ) {
-            string err = "label with Name \"" + label_name + "\" not used but Declared ";
-            warn.pb(make_pair(it.S.address, err ));
-        }
-    }
-}
-void second_pass_assembler() {
-    for (auto &rl : instrc_ip) {
-        int oprd_val;
-        bool is_data_value_true = false;
-        bool trp = 1;
-        string instrc1 = rl.S.instrc;
-        //cout << instrc1 << endl ;
-        bool off_need = false;
-        string instrc_value;
-        int tmpr = 0;
-        string oprd = rl.S.oprd;       
-        string lbl_name = rl.S.label;
-        int Location = rl.F;
-   
-        if (!instrc1.empty()) {
-            instrc_value = opcode_table[instrc1].opcode;
-            if (instrc1 == "halt") fl_halt = true;
-            if ((opcode_table[instrc1].mnemonic_type == 2) )  off_need = 1;
-            if ( (instrc1 == "data") ) is_data_value_true = true;
+    listing.close();
+
+    // generate machine code when there are no errors
+    //checking no of errors
+    if(errorcount == 0) {
+        ofstream object;
+        object.open(getFileName(filename)+".o", ios::out | ios::binary);
+        if(!object.is_open()) {
+            cout << "Unable to generate object file\n";
+            return 0;
         }
 
-        string f_final;
-        if ( oprd.empty() ) {
-            string tmp = "000000";
-            f_final = tmp + instrc_value;
+        // generate machine code
+        for(auto it = intermediate.begin(); it != intermediate.end(); it++) {
+            if(it->opcode >= 0) {
+                uint32_t mcode;
+                if(isParam(it->opcode)==1) {
+                    if(it->param_value != NIL) {
+                        mcode = Mac_code(it->opcode,it->param_value);
+                        object.write((char *) &mcode, sizeof(mcode));
+                    }
+                } else {
+                    if(it->param_value == NIL) {
+                        mcode = Mac_code(it->opcode);
+                        object.write((char *) &mcode, sizeof(mcode));
+                    }
+                }
+            } 
         }
-        else {
-            if ( !(labels_declared.count(oprd) == 0)) { oprd_val = labels_declared[oprd].address; }
-            else  oprd_val = stoi(oprd);
-
-            bool fl4 = ( off_need & ( labels_declared.count(oprd) != 0) ) ;
-            if (fl4) oprd_val -= Location + 1;
-            if ( !is_data_value_true ) {
-                string tmp = hexadeci_generation(oprd_val, true);
-                tmp += instrc_value;
-                f_final = tmp;
-            }
-            else {
-                string tmp = hexadeci_generation(oprd_val, false);
-                f_final = tmp;
-            }
-        }
-        string PC = hexadeci_generation(Location, false);
-        string mac_code;
-        string lis__code = PC;
-        if (!instrc1.empty()) {
-            mac_code += f_final;
-            lis__code += " " + f_final;
-        }
-        else lis__code += "         ";
-
-        if ( !lbl_name.empty() ) lis__code = lis__code + " " + lbl_name + ":";
-        if ( !instrc1.empty() ) lis__code = lis__code + " " + instrc1;
-        if ( !oprd.empty() ) lis__code = lis__code + " " + oprd;
-        if ( !lis__code.empty() ) list_code.pb(lis__code);
-        if ( !mac_code.empty() ) machine_code.pb(mac_code);        
+        object.close();
     }
-    if (!fl_halt) {
-        string err  = "HALT Instruction Not Found ";
-        warn.pb( {-1, err } );
-    }
-}
+    // End of Pass 2
 
-int main(int argc, char *argv[]) {
-    opcode_table["adj"] = {"0A", 1};
-    opcode_table["set"] = {"", 1};
-    opcode_table["data"] = {"", 1};
-    opcode_table["ldc"] = {"00", 1};
-    opcode_table["adc"] = {"01", 1};
-    opcode_table["ldl"] = {"02", 2};
-    opcode_table["stl"] = {"03", 2};
-    opcode_table["ldnl"] = {"04", 2};
-    opcode_table["stnl"] = {"05", 2};
-    opcode_table["call"] = {"0D", 2};
-    opcode_table["brz"] = {"0F", 2};
-    opcode_table["brlz"] = {"10", 2};
-    opcode_table["br"] = {"11", 2};
-    opcode_table["shr"] = {"09", 0};
-    opcode_table["a2sp"] = {"0B", 0};
-    opcode_table["sp2a"] = {"0C", 0};
-    opcode_table["return"] = {"0E", 0};
-    opcode_table["halt"] = {"12", 0};
-    opcode_table["add"] = {"06", 0};
-    opcode_table["sub"] = {"07", 0};
-    opcode_table["shl"] = {"08", 0};
-
-    if (argc != 2) {
-        std :: cout << "ERROR: you can pass only .asm File ";
-        return 0;
-    }
-
-    char *file_name = argv[1];
-
-    if (strlen(file_name) < 4 or strcmp("asm", file_name + strlen(file_name) - 3)) {
-        std :: cout << "ERROR: Incorrect file type " << std :: endl ;
-        std :: cout << "ERROR: Enter file with .asm extension ";
-        return 0;
-    }
-
-    string file_name_without_asm;
-    int i1 = 0;
-    for( ; ; )
-    {
-        if(argv[1][i1] == '.')break;
-        file_name_without_asm += argv[1][i1];
-        i1++;
-    }
-    inp_name = argv[1];
-
-    mach_cd_file_name = file_name_without_asm + ".o";
-    file_list = file_name_without_asm + ".l";
-    file_log = file_name_without_asm + ".log";
-
-    first_pass_assembler();
-
-    if (v_error.size() > 0) {
-        std :: cout << "Process Failed" << std :: endl ;
-        std :: cout << "Errors Found" << std :: endl ;
-        std :: sort(v_error.begin(), v_error.end());
-
-        ofstream out_log(file_log);
-
-        out_log << "Failed To Assemble" << std :: endl ;
-        out_log << "ERRORS :- " << std :: endl ;
-        std::vector<std::pair<int, std::string>>::iterator it;
-        for (it = v_error.begin(); it != v_error.end(); ++it){
-            std :: cout << "Error at Line " << it->F << " : " << it->S << std :: endl;
-        }
-        for (it = v_error.begin(); it != v_error.end(); ++it){
-            out_log << "Error at Line " << it->F << " : " << it->S << std :: endl;
-        }
-
-        out_log.close();
-        exit(0);
-    }
-
-    second_pass_assembler();
-    if (warn.size() > 0) {
-        sort(warn.begin(), warn.end());
-
-        ofstream out_log(file_log);
-        std :: cout << "Warnings" << std :: endl ;
-        out_log << "Warnings" << std :: endl ;
-        std::vector<std::pair<int, std::string>>::iterator i;
-        for (i = warn.begin(); i != warn.end(); ++i){
-            std :: cout << "Warning at Line " << i->F << " : " << i->S << std :: endl;
-        }
-        for (i = warn.begin(); i != warn.end(); ++i){
-            out_log << "Warning at Line " << i->F << " : " << i->S << std :: endl;
-        }
-        out_log.close();
-    }
-    ofstream out_l(file_list);
-    for(int i = 0 ; i < list_code.size() ; i++){
-        out_l << list_code[i] << std :: endl;
-    }
-    out_l.close();
-
-    ofstream outp_ob;
-
-    outp_ob.open( mach_cd_file_name , ( ios::binary | ios::out ) );
-    for (auto &j : machine_code) {
-        unsigned int y;
-        // cout << "j = " << j << endl; 
-        stringstream ss;
-        ss << hex << j;
-        ss >> y;
-
-        static_cast<int>(y);
-        outp_ob.write((const char *)&y, sizeof(unsigned));
-    }
-    outp_ob.close();
     return 0;
+}
+//check if number is octal
+int checkOctal(string s) {
+    if (s[0] != '0') 
+    return false;
+
+    for (int i = 1; i < s.length(); i++) {
+        if( !isdigit(s[i]) || s[i] > '7') {
+            return false;
+        }
+    }
+    return true;
+}
+//check if number is decimal
+int checkDecimal(string s) {
+    int start = (s[0] == '-' || s[0] == '+') ? 1 : 0;
+
+    for(int i = start; i < s.length(); i++) {
+        if(!isdigit(s[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+//check if number is hexadecimal
+int checkHexadecimal(string s) {
+    if (s.substr(0,2) != "0x") return false;
+
+    string hexdig = "0123456789abcdefABCDEF";
+    for (int i = 2; i < s.length(); i++) {
+        if( hexdig.find(s[i]) == string::npos ) {
+            return false;
+        }
+    }
+    return true;
+}
+//checks parameter type
+int parameter_type(string s) {
+    if( checkOctal(s) ) {
+        return 8;
+    }
+
+    if( checkDecimal(s) ) {
+        return 10;
+    }
+
+    if( checkHexadecimal(s) ) {
+        return 16;
+    }
+    return 1;
+}
+//checks if lab3l is valid ie should begin with alphabet or _
+int valid_label(string label) {
+    if( !((label[0] >= 'a' && label[0] <= 'z') || (label[0] >= 'A' && label[0] <= 'Z') || (label[0] == '_')) ) return false;
+    
+    for(int i = 0; i < label.length(); i++) {
+        if( !( isdigit(label[i]) || (label[0] >= 'a' && label[0] <= 'z') || (label[0] >= 'A' && label[0] <= 'Z') || (label[0] == '_') ) ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+//convert symbol to paramter value
+int sym_to_param(int opcode, string param_name, int pc) {
+    switch (opcode) {
+        case 13:    // call
+        case 15:    // brz
+        case 16:    // brlz
+        case 17:    // br
+            return symbols_list[param_name].first-pc-1; //address of label-pc-1
+        
+        case 0:     // ldc
+        case 1:     // adc
+        case 2:     // ldl
+        case 3:     // stl
+        case 4:     // ldnl
+        case 5:     // stnl
+        case 10:    // adj
+            return symbols_list[param_name].first;  //parameter value stored directly
+
+        default:
+            break;
+    }
+    return 0;
+}
+//returns opcode of mnemonic
+int check_mnem(int opcode, string param_name) {
+    if(symbols_list[param_name].second == 2) {
+        return mnem_mapping[opcode].set;    //const
+    }
+    
+    if(symbols_list[param_name].second == 1) {
+        return mnem_mapping[opcode].data;   //data
+    }
+
+    return mnem_mapping[opcode].label;
+}
+
+int checkUnusedSymbol(string sym) {
+    for(auto it = intermediate.begin(); it != intermediate.end(); it++) {
+        if(sym == it->param_name || symbols_list[sym].first == -1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int symbolLine(string sym) {
+    for(int i = 0; i < intermediate.size(); i++) {
+        if(sym == intermediate[i].label) {
+            return i;
+        }
+    }
+    return NIL;
+}
+
+string getFileName(string fname) {
+    size_t dotpos = fname.find(".");
+    if(dotpos == string::npos) return fname;
+    return fname.substr(0,dotpos);
+}
+
+uint32_t Mac_code(int opcode, int param_value) {
+    return (param_value << 8) | opcode;
+}
+//gets opcode of operation
+int getOpcode(string mnem) {
+    int len = mnem_mapping.size();
+    for(int i = 0; i < len; i++) {
+        if(mnem_mapping[i].mnem == mnem) {
+            return i;
+        }
+    }
+    if(mnem != "") return -1;    //not a valid mnem
+    return NIL;
+}
+//gets mnemonic based on opcode
+string getMnem(int opcode) {
+    int len = mnem_mapping.size();
+    if(opcode >= 0 && opcode < len) {
+        return mnem_mapping[opcode].mnem;
+    }
+    return "NIL";
+}
+//checks if parameter or not
+int isParam(int opcode) {
+    int len = mnem_mapping.size();
+    if(opcode >= 0 && opcode < len) {
+        return mnem_mapping[opcode].isParam;
+    }
+    return NIL;
+}
+
+string trim_left(const string& s) {
+	size_t start = s.find_first_not_of(ALL_SPACES);
+    if(start != string::npos) {
+        return s.substr(start);
+    }
+	return "";
+}
+
+string trim_right(const string& s) {
+	size_t end = s.find_last_not_of(ALL_SPACES);
+    if(end != string::npos) {
+        return s.substr(0,end+1);
+    }
+	return "";
+}
+
+string trim(const string& s) {
+	return trim_right(trim_left(s));
+}
+
+int conv_to_num(string s) {
+    s = trim(s);
+    if(s.find("0x") == 0) {
+        return string_to_int(s.substr(2),16);
+    } else if(s.find("0") == 0) {
+        return string_to_int(s.substr(1),8);
+    } else if(s.find("-") == 0) {
+        return -string_to_int(s.substr(1));
+    } else if(s.find("+") == 0) {
+        return string_to_int(s.substr(1));
+    } else {
+        return string_to_int(s);
+    }
+}
+
+int string_to_int(string s, int base) {
+    //if(base == 16) { s = s.substr(2); }
+    int len = s.length();
+    int exp = 1, res = 0;
+    for(int i = len-1; i >= 0; i--) {
+        int d = (s[i] >= 'a') ? (s[i]-'a'+10) : (s[i]-'0');
+        res += (d * exp);
+        exp *= base;
+    }
+    return res;
+}
+
+string dec_to_hex(int num) { 
+    string digits = "0123456789ABCDEF";
+    string res = ""; 
+
+    if(num == 0) res = "0";
+    
+    if(num > 0) { 
+        while(num) { 
+            res = digits[num % 16] + res; 
+            num /= 16; 
+        } 
+    } else { 
+        unsigned int n = num; 
+        while(n) { 
+            res = digits[n % 16] + res; 
+            n /= 16; 
+        } 
+    } 
+
+    if(res.length() < 8) {
+        for(int i = res.length(); i < 8; i++) {
+            res = "0"+res;
+        }
+    }
+    return res; 
 }
